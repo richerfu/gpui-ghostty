@@ -78,6 +78,7 @@ Deliver a maintainable Rust workspace that bootstraps an embedded terminal contr
 
 ## User Work
 
+- [x] Adapt Ghostty Zig sources to compile with local Zig `0.16-dev` and verify `gpui_ghostty_terminal` runs on GPUI.
 - [x] Cleanup features: make gpui and Zig build required.
 - [x] Auto push to remote after commit (documented in `AGENTS.md`).
 - [x] Add basic keyboard input to `basic_terminal` (type-to-echo).

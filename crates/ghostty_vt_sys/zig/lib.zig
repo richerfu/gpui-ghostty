@@ -203,13 +203,13 @@ const Handler = struct {
     }
 };
 
-export fn ghostty_vt_terminal_new(cols: u16, rows: u16) callconv(.C) ?*anyopaque {
+export fn ghostty_vt_terminal_new(cols: u16, rows: u16) callconv(.c) ?*anyopaque {
     const alloc = std.heap.c_allocator;
     const handle = TerminalHandle.init(alloc, cols, rows) catch return null;
     return @ptrCast(handle);
 }
 
-export fn ghostty_vt_terminal_free(terminal_ptr: ?*anyopaque) callconv(.C) void {
+export fn ghostty_vt_terminal_free(terminal_ptr: ?*anyopaque) callconv(.c) void {
     if (terminal_ptr == null) return;
     const handle: *TerminalHandle = @ptrCast(@alignCast(terminal_ptr.?));
     handle.deinit();
@@ -223,7 +223,7 @@ export fn ghostty_vt_terminal_set_default_colors(
     bg_r: u8,
     bg_g: u8,
     bg_b: u8,
-) callconv(.C) void {
+) callconv(.c) void {
     if (terminal_ptr == null) return;
     const handle: *TerminalHandle = @ptrCast(@alignCast(terminal_ptr.?));
     handle.default_fg = .{ .r = fg_r, .g = fg_g, .b = fg_b };
@@ -234,7 +234,7 @@ export fn ghostty_vt_terminal_feed(
     terminal_ptr: ?*anyopaque,
     bytes: [*]const u8,
     len: usize,
-) callconv(.C) c_int {
+) callconv(.c) c_int {
     if (terminal_ptr == null) return 1;
     const handle: *TerminalHandle = @ptrCast(@alignCast(terminal_ptr.?));
 
@@ -250,7 +250,7 @@ export fn ghostty_vt_terminal_resize(
     terminal_ptr: ?*anyopaque,
     cols: u16,
     rows: u16,
-) callconv(.C) c_int {
+) callconv(.c) c_int {
     if (terminal_ptr == null) return 1;
     const handle: *TerminalHandle = @ptrCast(@alignCast(terminal_ptr.?));
 
@@ -265,7 +265,7 @@ export fn ghostty_vt_terminal_resize(
 export fn ghostty_vt_terminal_scroll_viewport(
     terminal_ptr: ?*anyopaque,
     delta_lines: i32,
-) callconv(.C) c_int {
+) callconv(.c) c_int {
     if (terminal_ptr == null) return 1;
     const handle: *TerminalHandle = @ptrCast(@alignCast(terminal_ptr.?));
 
@@ -273,7 +273,7 @@ export fn ghostty_vt_terminal_scroll_viewport(
     return 0;
 }
 
-export fn ghostty_vt_terminal_scroll_viewport_top(terminal_ptr: ?*anyopaque) callconv(.C) c_int {
+export fn ghostty_vt_terminal_scroll_viewport_top(terminal_ptr: ?*anyopaque) callconv(.c) c_int {
     if (terminal_ptr == null) return 1;
     const handle: *TerminalHandle = @ptrCast(@alignCast(terminal_ptr.?));
 
@@ -281,7 +281,7 @@ export fn ghostty_vt_terminal_scroll_viewport_top(terminal_ptr: ?*anyopaque) cal
     return 0;
 }
 
-export fn ghostty_vt_terminal_scroll_viewport_bottom(terminal_ptr: ?*anyopaque) callconv(.C) c_int {
+export fn ghostty_vt_terminal_scroll_viewport_bottom(terminal_ptr: ?*anyopaque) callconv(.c) c_int {
     if (terminal_ptr == null) return 1;
     const handle: *TerminalHandle = @ptrCast(@alignCast(terminal_ptr.?));
 
@@ -293,7 +293,7 @@ export fn ghostty_vt_terminal_cursor_position(
     terminal_ptr: ?*anyopaque,
     col_out: ?*u16,
     row_out: ?*u16,
-) callconv(.C) bool {
+) callconv(.c) bool {
     if (terminal_ptr == null) return false;
     if (col_out == null or row_out == null) return false;
     const handle: *TerminalHandle = @ptrCast(@alignCast(terminal_ptr.?));
@@ -303,7 +303,7 @@ export fn ghostty_vt_terminal_cursor_position(
     return true;
 }
 
-export fn ghostty_vt_terminal_dump_viewport(terminal_ptr: ?*anyopaque) callconv(.C) ghostty_vt_bytes_t {
+export fn ghostty_vt_terminal_dump_viewport(terminal_ptr: ?*anyopaque) callconv(.c) ghostty_vt_bytes_t {
     if (terminal_ptr == null) return .{ .ptr = null, .len = 0 };
     const handle: *TerminalHandle = @ptrCast(@alignCast(terminal_ptr.?));
 
@@ -318,7 +318,7 @@ export fn ghostty_vt_terminal_dump_viewport(terminal_ptr: ?*anyopaque) callconv(
 export fn ghostty_vt_terminal_dump_viewport_row(
     terminal_ptr: ?*anyopaque,
     row: u16,
-) callconv(.C) ghostty_vt_bytes_t {
+) callconv(.c) ghostty_vt_bytes_t {
     if (terminal_ptr == null) return .{ .ptr = null, .len = 0 };
     const handle: *TerminalHandle = @ptrCast(@alignCast(terminal_ptr.?));
 
@@ -326,16 +326,17 @@ export fn ghostty_vt_terminal_dump_viewport_row(
     const pin = handle.terminal.screen.pages.pin(pt) orelse return .{ .ptr = null, .len = 0 };
 
     const alloc = std.heap.c_allocator;
-    var builder = std.ArrayList(u8).init(alloc);
-    errdefer builder.deinit();
+    var out: std.Io.Writer.Allocating = .init(alloc);
+    errdefer out.deinit();
 
-    handle.terminal.screen.pages.encodeUtf8(builder.writer(), .{
+    handle.terminal.screen.pages.encodeUtf8(&out.writer, .{
         .tl = pin,
         .br = pin,
         .unwrap = false,
     }) catch return .{ .ptr = null, .len = 0 };
 
-    const slice = builder.toOwnedSlice() catch return .{ .ptr = null, .len = 0 };
+    var owned = out.toArrayList();
+    const slice = owned.toOwnedSlice(alloc) catch return .{ .ptr = null, .len = 0 };
     return .{ .ptr = slice.ptr, .len = slice.len };
 }
 
@@ -353,7 +354,7 @@ const CellStyle = extern struct {
 export fn ghostty_vt_terminal_dump_viewport_row_cell_styles(
     terminal_ptr: ?*anyopaque,
     row: u16,
-) callconv(.C) ghostty_vt_bytes_t {
+) callconv(.c) ghostty_vt_bytes_t {
     if (terminal_ptr == null) return .{ .ptr = null, .len = 0 };
     const handle: *TerminalHandle = @ptrCast(@alignCast(terminal_ptr.?));
 
@@ -366,7 +367,7 @@ export fn ghostty_vt_terminal_dump_viewport_row_cell_styles(
     const palette: *const terminal.color.Palette = &handle.terminal.color_palette.colors;
 
     const alloc = std.heap.c_allocator;
-    var out = std.ArrayList(u8).init(alloc);
+    var out = std.array_list.Managed(u8).init(alloc);
     errdefer out.deinit();
 
     out.ensureTotalCapacity(cells.len * @sizeOf(CellStyle)) catch return .{ .ptr = null, .len = 0 };
@@ -451,7 +452,7 @@ fn resolvedStyle(
 export fn ghostty_vt_terminal_dump_viewport_row_style_runs(
     terminal_ptr: ?*anyopaque,
     row: u16,
-) callconv(.C) ghostty_vt_bytes_t {
+) callconv(.c) ghostty_vt_bytes_t {
     if (terminal_ptr == null) return .{ .ptr = null, .len = 0 };
     const handle: *TerminalHandle = @ptrCast(@alignCast(terminal_ptr.?));
 
@@ -464,7 +465,7 @@ export fn ghostty_vt_terminal_dump_viewport_row_style_runs(
     const palette: *const terminal.color.Palette = &handle.terminal.color_palette.colors;
 
     const alloc = std.heap.c_allocator;
-    var out = std.ArrayList(u8).init(alloc);
+    var out = std.array_list.Managed(u8).init(alloc);
     errdefer out.deinit();
 
     if (cells.len == 0) {
@@ -597,13 +598,13 @@ export fn ghostty_vt_terminal_dump_viewport_row_style_runs(
 export fn ghostty_vt_terminal_take_dirty_viewport_rows(
     terminal_ptr: ?*anyopaque,
     rows: u16,
-) callconv(.C) ghostty_vt_bytes_t {
+) callconv(.c) ghostty_vt_bytes_t {
     if (terminal_ptr == null or rows == 0) return .{ .ptr = null, .len = 0 };
     const handle: *TerminalHandle = @ptrCast(@alignCast(terminal_ptr.?));
 
     const alloc = std.heap.c_allocator;
 
-    var out = std.ArrayList(u8).init(alloc);
+    var out = std.array_list.Managed(u8).init(alloc);
     errdefer out.deinit();
 
     const dirty = handle.terminal.flags.dirty;
@@ -645,7 +646,7 @@ fn pinScreenRow(pin: terminal.Pin) u32 {
 
 export fn ghostty_vt_terminal_take_viewport_scroll_delta(
     terminal_ptr: ?*anyopaque,
-) callconv(.C) i32 {
+) callconv(.c) i32 {
     if (terminal_ptr == null) return 0;
     const handle: *TerminalHandle = @ptrCast(@alignCast(terminal_ptr.?));
 
@@ -671,7 +672,7 @@ export fn ghostty_vt_terminal_hyperlink_at(
     terminal_ptr: ?*anyopaque,
     col: u16,
     row: u16,
-) callconv(.C) ghostty_vt_bytes_t {
+) callconv(.c) ghostty_vt_bytes_t {
     if (terminal_ptr == null or col == 0 or row == 0) return .{ .ptr = null, .len = 0 };
     const handle: *TerminalHandle = @ptrCast(@alignCast(terminal_ptr.?));
 
@@ -695,7 +696,7 @@ export fn ghostty_vt_encode_key_named(
     name_ptr: ?[*]const u8,
     name_len: usize,
     modifiers: u16,
-) callconv(.C) ghostty_vt_bytes_t {
+) callconv(.c) ghostty_vt_bytes_t {
     if (name_ptr == null or name_len == 0) return .{ .ptr = null, .len = 0 };
 
     const name = name_ptr.?[0..name_len];
@@ -792,7 +793,7 @@ const ghostty_vt_bytes_t = extern struct {
     len: usize,
 };
 
-export fn ghostty_vt_bytes_free(bytes: ghostty_vt_bytes_t) callconv(.C) void {
+export fn ghostty_vt_bytes_free(bytes: ghostty_vt_bytes_t) callconv(.c) void {
     if (bytes.ptr == null or bytes.len == 0) return;
     std.heap.c_allocator.free(bytes.ptr.?[0..bytes.len]);
 }
@@ -804,7 +805,7 @@ export fn ghostty_simd_decode_utf8_until_control_seq(
     count: usize,
     output: [*]u32,
     output_count: *usize,
-) callconv(.C) usize {
+) callconv(.c) usize {
     var i: usize = 0;
     var out_i: usize = 0;
     while (i < count) {

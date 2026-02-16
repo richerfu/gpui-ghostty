@@ -1,3 +1,4 @@
 [submodule "vendor/ghostty"]
 	path = vendor/ghostty
-	url = https://github.com/ghostty-org/ghostty
+	url = https://github.com/richerfu/ghostty.git
+	branch = zig-016-ohos-adapt

@@ -9,6 +9,7 @@ use gpui::{
 };
 use std::ops::Range;
 use std::sync::Once;
+use std::time::Duration;
 
 actions!(terminal_view, [Copy, Paste, SelectAll, Tab, TabPrev]);
 
@@ -225,6 +226,10 @@ pub struct TerminalView {
     marked_text: Option<SharedString>,
     marked_selected_range_utf16: Range<usize>,
     font: gpui::Font,
+    was_focused: bool,
+    ime_unmark_from_commit: bool,
+    cursor_blink_visible: bool,
+    cursor_blink_started: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -263,6 +268,10 @@ impl TerminalView {
             marked_text: None,
             marked_selected_range_utf16: 0..0,
             font: crate::default_terminal_font(),
+            was_focused: false,
+            ime_unmark_from_commit: false,
+            cursor_blink_visible: true,
+            cursor_blink_started: false,
         }
         .with_refreshed_viewport()
     }
@@ -306,6 +315,10 @@ impl TerminalView {
             marked_text: None,
             marked_selected_range_utf16: 0..0,
             font: crate::default_terminal_font(),
+            was_focused: false,
+            ime_unmark_from_commit: false,
+            cursor_blink_visible: true,
+            cursor_blink_started: false,
         }
         .with_refreshed_viewport()
     }
@@ -742,7 +755,10 @@ impl TerminalView {
 
         let item = ClipboardItem::new_string(selection.to_string());
         cx.write_to_clipboard(item.clone());
-        #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+        #[cfg(all(
+            any(target_os = "linux", target_os = "freebsd"),
+            not(target_env = "ohos")
+        ))]
         cx.write_to_primary(item);
     }
 
@@ -772,7 +788,10 @@ impl TerminalView {
                 if let Some(link) = self.session.hyperlink_at(col, row) {
                     let item = ClipboardItem::new_string(link);
                     cx.write_to_clipboard(item.clone());
-                    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+                    #[cfg(all(
+                        any(target_os = "linux", target_os = "freebsd"),
+                        not(target_env = "ohos")
+                    ))]
                     cx.write_to_primary(item);
                     return;
                 }
@@ -782,7 +801,10 @@ impl TerminalView {
                 {
                     let item = ClipboardItem::new_string(url);
                     cx.write_to_clipboard(item.clone());
-                    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+                    #[cfg(all(
+                        any(target_os = "linux", target_os = "freebsd"),
+                        not(target_env = "ohos")
+                    ))]
                     cx.write_to_primary(item);
                     return;
                 }
@@ -793,7 +815,10 @@ impl TerminalView {
             {
                 let item = ClipboardItem::new_string(url);
                 cx.write_to_clipboard(item.clone());
-                #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+                #[cfg(all(
+                    any(target_os = "linux", target_os = "freebsd"),
+                    not(target_env = "ohos")
+                ))]
                 cx.write_to_primary(item);
                 return;
             }
@@ -1243,17 +1268,52 @@ impl EntityInputHandler for TerminalView {
         (len > 0).then_some(0..len)
     }
 
-    fn unmark_text(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+    fn unmark_text(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.ime_unmark_from_commit {
+            self.ime_unmark_from_commit = false;
+            self.clear_marked_text(cx);
+            return;
+        }
+
+        // Treat non-commit unmark as IME panel dismissal on mobile.
+        // We clear composition and drop focus to prevent immediate keyboard re-open.
         self.clear_marked_text(cx);
+        window.blur();
     }
 
     fn replace_text_in_range(
         &mut self,
-        _range: Option<Range<usize>>,
+        range: Option<Range<usize>>,
         text: &str,
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if text.is_empty() {
+            match range {
+                Some(r) => {
+                    let deletes = r.end.saturating_sub(r.start).max(1);
+                    for _ in 0..deletes {
+                        self.send_input_parts(&[b"\x7f"], cx);
+                    }
+                }
+                None => {
+                    // Some mobile IMEs commit "enter/go/send" as an empty replacement.
+                    // Treat this path as Enter so remote shell can execute.
+                    self.send_input_parts(&[b"\r"], cx);
+                }
+            }
+            self.clear_marked_text(cx);
+            return;
+        }
+
+        if text.contains('\n') {
+            let normalized = text.replace("\r\n", "\r").replace('\n', "\r");
+            self.send_input_parts(&[normalized.as_bytes()], cx);
+            self.clear_marked_text(cx);
+            return;
+        }
+
+        self.ime_unmark_from_commit = true;
         self.clear_marked_text(cx);
         self.commit_text(text, cx);
     }
@@ -1302,6 +1362,10 @@ impl EntityInputHandler for TerminalView {
     ) -> Option<usize> {
         None
     }
+
+    fn accepts_text_input(&self, window: &mut Window, _cx: &mut Context<Self>) -> bool {
+        self.focus_handle.is_focused(window)
+    }
 }
 
 struct TerminalPrepaintState {
@@ -1344,7 +1408,7 @@ fn cursor_color_for_background(background: Rgb) -> gpui::Hsla {
     } else {
         gpui::white()
     };
-    cursor.a = 0.72;
+    cursor.a = 0.95;
     cursor
 }
 
@@ -1583,6 +1647,7 @@ impl Element for TerminalTextElement {
         let run_color = style.color;
 
         let cell_width = cell_metrics(window, &font).map(|(w, _)| px(w));
+        let is_monospace = is_probably_monospace_font(window, &font);
 
         self.view.update(cx, |view, _cx| {
             if view.viewport_lines.is_empty() {
@@ -1679,7 +1744,7 @@ impl Element for TerminalTextElement {
                 let force_width = cell_width.and_then(|cell_width| {
                     use unicode_width::UnicodeWidthChar as _;
                     let has_wide = text.as_str().chars().any(|ch| ch.width().unwrap_or(0) > 1);
-                    (!has_wide).then_some(cell_width)
+                    (is_monospace && !has_wide).then_some(cell_width)
                 });
                 let shaped = window
                     .text_system()
@@ -1772,7 +1837,7 @@ impl Element for TerminalTextElement {
                 let force_width = {
                     use unicode_width::UnicodeWidthChar as _;
                     let has_wide = text.as_str().chars().any(|ch| ch.width().unwrap_or(0) > 1);
-                    (!has_wide).then_some(px(cell_width))
+                    (is_monospace && !has_wide).then_some(px(cell_width))
                 };
                 let shaped =
                     window
@@ -1931,22 +1996,32 @@ impl Element for TerminalTextElement {
 
         let cursor = {
             let view = self.view.read(cx);
-            view.focus_handle
-                .is_focused(window)
+            (view.focus_handle.is_focused(window) && view.cursor_blink_visible)
                 .then(|| view.session.cursor_position())
                 .flatten()
         }
         .and_then(|(col, row)| {
-            let background = { self.view.read(cx).session.default_background() };
+            let row_index = row.saturating_sub(1) as usize;
+            let background = {
+                let view = self.view.read(cx);
+                let default_bg = view.session.default_background();
+                view.viewport_style_runs
+                    .get(row_index)
+                    .and_then(|runs| {
+                        runs.iter().find_map(|run| {
+                            (col >= run.start_col && col <= run.end_col).then_some(run.bg)
+                        })
+                    })
+                    .unwrap_or(default_bg)
+            };
             let cursor_color = cursor_color_for_background(background);
             let y = bounds.top() + line_height * (row.saturating_sub(1)) as f32;
-            let row_index = row.saturating_sub(1) as usize;
             let line = shaped_lines.get(row_index)?;
             let byte_index = byte_index_for_column_in_line(line.text.as_str(), col);
             let x = bounds.left() + line.x_for_index(byte_index.min(line.text.len()));
 
             Some(fill(
-                Bounds::new(point(x, y), size(px(2.0), line_height)),
+                Bounds::new(point(x, y), size(px(3.0), line_height)),
                 cursor_color,
             ))
         });
@@ -2039,6 +2114,34 @@ impl Render for TerminalView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         ensure_key_bindings(cx);
 
+        if !self.cursor_blink_started {
+            self.cursor_blink_started = true;
+            cx.spawn(async move |this, cx| loop {
+                cx.background_executor()
+                    .timer(Duration::from_millis(500))
+                    .await;
+                if this
+                    .update(cx, |this, cx| {
+                        this.cursor_blink_visible = !this.cursor_blink_visible;
+                        cx.notify();
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+            })
+            .detach();
+        }
+
+        let focused = self.focus_handle.is_focused(window);
+        if self.was_focused && !focused {
+            // Clear IME composition when the terminal loses focus.
+            self.clear_marked_text(cx);
+            self.selection = None;
+            self.cursor_blink_visible = true;
+        }
+        self.was_focused = focused;
+
         if !self.pending_output.is_empty() {
             let bytes = std::mem::take(&mut self.pending_output);
             self.feed_output_bytes_to_session(&bytes);
@@ -2104,7 +2207,7 @@ pub(crate) fn cell_metrics(window: &mut gpui::Window, font: &gpui::Font) -> Opti
     let lines = window
         .text_system()
         .shape_text(
-            gpui::SharedString::from("M"),
+            gpui::SharedString::from("0"),
             font_size,
             &[run],
             None,
@@ -2116,6 +2219,44 @@ pub(crate) fn cell_metrics(window: &mut gpui::Window, font: &gpui::Font) -> Opti
     let cell_width = f32::from(line.width()).max(1.0);
     let cell_height = f32::from(line_height).max(1.0);
     Some((cell_width, cell_height))
+}
+
+fn is_probably_monospace_font(window: &mut gpui::Window, font: &gpui::Font) -> bool {
+    let mut style = window.text_style();
+    style.font_family = font.family.clone();
+    style.font_features = crate::default_terminal_font_features();
+    style.font_fallbacks = font.fallbacks.clone();
+
+    let rem_size = window.rem_size();
+    let font_size = style.font_size.to_pixels(rem_size);
+    let run = style.to_run(1);
+    let text_system = window.text_system();
+
+    let i_width = text_system
+        .shape_text(
+            gpui::SharedString::from("i"),
+            font_size,
+            &[run.clone()],
+            None,
+            Some(1),
+        )
+        .ok()
+        .and_then(|lines| lines.first().map(|line| f32::from(line.width())));
+    let w_width = text_system
+        .shape_text(
+            gpui::SharedString::from("W"),
+            font_size,
+            &[run],
+            None,
+            Some(1),
+        )
+        .ok()
+        .and_then(|lines| lines.first().map(|line| f32::from(line.width())));
+
+    match (i_width, w_width) {
+        (Some(iw), Some(ww)) => (iw - ww).abs() <= 0.5,
+        _ => true,
+    }
 }
 
 #[cfg(test)]

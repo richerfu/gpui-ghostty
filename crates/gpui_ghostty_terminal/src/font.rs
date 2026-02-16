@@ -1,5 +1,7 @@
 pub fn default_terminal_font() -> gpui::Font {
-    let family = if cfg!(target_os = "macos") {
+    let family = if cfg!(target_env = "ohos") {
+        "HarmonyOS Sans"
+    } else if cfg!(target_os = "macos") {
         "Menlo"
     } else if cfg!(target_os = "windows") {
         "Consolas"
@@ -24,6 +26,8 @@ pub fn default_terminal_font() -> gpui::Font {
         "Noto Sans Mono CJK JP".to_string(),
         "Source Han Mono SC".to_string(),
         "WenQuanYi Zen Hei Mono".to_string(),
+        "HarmonyOS Sans".to_string(),
+        "HarmonyOS Sans SC".to_string(),
         "Apple Color Emoji".to_string(),
         "Noto Color Emoji".to_string(),
         "Segoe UI Emoji".to_string(),
