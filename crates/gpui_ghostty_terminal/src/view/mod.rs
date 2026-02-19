@@ -2027,9 +2027,10 @@ impl Element for TerminalTextElement {
             let line = shaped_lines.get(row_index)?;
             let byte_index = byte_index_for_column_in_line(line.text.as_str(), col);
             let x = bounds.left() + line.x_for_index(byte_index.min(line.text.len()));
+            let cursor_width = px(1.0);
 
             Some(fill(
-                Bounds::new(point(x, y), size(px(3.0), line_height)),
+                Bounds::new(point(x, y), size(cursor_width, line_height)),
                 cursor_color,
             ))
         });
