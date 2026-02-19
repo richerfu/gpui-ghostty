@@ -230,6 +230,7 @@ pub struct TerminalView {
     ime_unmark_from_commit: bool,
     cursor_blink_visible: bool,
     cursor_blink_started: bool,
+    pending_grid_resize: Option<(u16, u16, u32, u32)>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -272,6 +273,7 @@ impl TerminalView {
             ime_unmark_from_commit: false,
             cursor_blink_visible: true,
             cursor_blink_started: false,
+            pending_grid_resize: None,
         }
         .with_refreshed_viewport()
     }
@@ -319,6 +321,7 @@ impl TerminalView {
             ime_unmark_from_commit: false,
             cursor_blink_visible: true,
             cursor_blink_started: false,
+            pending_grid_resize: None,
         }
         .with_refreshed_viewport()
     }
@@ -732,6 +735,10 @@ impl TerminalView {
         cx.notify();
     }
 
+    pub fn take_pending_grid_resize(&mut self) -> Option<(u16, u16, u32, u32)> {
+        self.pending_grid_resize.take()
+    }
+
     fn on_paste(&mut self, _: &Paste, _window: &mut Window, cx: &mut Context<Self>) {
         let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) else {
             return;
@@ -777,7 +784,9 @@ impl TerminalView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.focus_handle.focus(window, cx);
+        if !self.focus_handle.is_focused(window) {
+            self.focus_handle.focus(window, cx);
+        }
 
         if event.first_mouse {
             return;
@@ -1268,17 +1277,16 @@ impl EntityInputHandler for TerminalView {
         (len > 0).then_some(0..len)
     }
 
-    fn unmark_text(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn unmark_text(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         if self.ime_unmark_from_commit {
             self.ime_unmark_from_commit = false;
             self.clear_marked_text(cx);
             return;
         }
 
-        // Treat non-commit unmark as IME panel dismissal on mobile.
-        // We clear composition and drop focus to prevent immediate keyboard re-open.
+        // Non-commit unmark is commonly fired when IME panel state changes.
+        // Keep terminal focus, otherwise Enter can cause focus loss/cursor hidden.
         self.clear_marked_text(cx);
-        window.blur();
     }
 
     fn replace_text_in_range(
@@ -2048,8 +2056,29 @@ impl Element for TerminalTextElement {
         window: &mut Window,
         cx: &mut App,
     ) {
-        self.view.update(cx, |view, _cx| {
+        let font = { self.view.read(cx).font.clone() };
+        let grid = cell_metrics(window, &font).map(|(cell_width, cell_height)| {
+            let cols = ((f32::from(bounds.size.width) / cell_width).floor() as u16).max(1);
+            let rows = ((f32::from(bounds.size.height) / cell_height).floor() as u16).max(1);
+            let pixel_width = f32::from(bounds.size.width).max(0.0) as u32;
+            let pixel_height = f32::from(bounds.size.height).max(0.0) as u32;
+            (cols, rows, pixel_width, pixel_height)
+        });
+
+        self.view.update(cx, |view, cx| {
             view.last_bounds = Some(bounds);
+
+            if let Some((cols, rows, pixel_width, pixel_height)) = grid {
+                let current = (view.session.cols(), view.session.rows());
+                let target = (cols, rows);
+                if current != target {
+                    let _ = view.session.resize(cols, rows);
+                    view.sync_viewport_scroll_tracking();
+                    view.pending_refresh = true;
+                    view.pending_grid_resize = Some((cols, rows, pixel_width, pixel_height));
+                    cx.notify();
+                }
+            }
         });
 
         let focus_handle = { self.view.read(cx).focus_handle.clone() };
