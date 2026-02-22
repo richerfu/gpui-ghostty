@@ -11,3 +11,6 @@ ghostty_vt = { path = "../ghostty_vt" }
 gpui = { workspace = true }
 smallvec = { workspace = true }
 unicode-width = "0.2"
+
+[target.'cfg(target_env = "ohos")'.dependencies]
+ohos-drawing-binding = "0.1"

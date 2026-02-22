@@ -735,6 +735,16 @@ impl TerminalView {
         cx.notify();
     }
 
+    pub fn set_font(&mut self, font: gpui::Font, cx: &mut Context<Self>) {
+        self.font = font;
+        self.line_layout_key = None;
+        for layout in &mut self.line_layouts {
+            *layout = None;
+        }
+        self.pending_refresh = true;
+        cx.notify();
+    }
+
     pub fn take_pending_grid_resize(&mut self) -> Option<(u16, u16, u32, u32)> {
         self.pending_grid_resize.take()
     }
@@ -2233,11 +2243,19 @@ pub(crate) fn cell_metrics(window: &mut gpui::Window, font: &gpui::Font) -> Opti
     let font_size = style.font_size.to_pixels(rem_size);
     let line_height = style.line_height.to_pixels(style.font_size, rem_size);
 
+    #[cfg(target_env = "ohos")]
+    if let Some(width) = ohos_cell_width(font, f32::from(font_size)) {
+        let cell_height = f32::from(line_height).max(1.0);
+        return Some((width.max(1.0), cell_height));
+    }
+
     let run = style.to_run(1);
+    // Use a longer sample to reduce glyph side-bearing bias from single-char shaping.
+    let sample = "0000000000000000";
     let lines = window
         .text_system()
         .shape_text(
-            gpui::SharedString::from("0"),
+            gpui::SharedString::from(sample),
             font_size,
             &[run],
             None,
@@ -2246,9 +2264,35 @@ pub(crate) fn cell_metrics(window: &mut gpui::Window, font: &gpui::Font) -> Opti
         .ok()?;
     let line = lines.first()?;
 
-    let cell_width = f32::from(line.width()).max(1.0);
+    let cell_width = (f32::from(line.width()) / sample.len() as f32).max(1.0);
     let cell_height = f32::from(line_height).max(1.0);
     Some((cell_width, cell_height))
+}
+
+#[cfg(target_env = "ohos")]
+fn ohos_cell_width(font: &gpui::Font, font_size: f32) -> Option<f32> {
+    let mut typography_style = ohos_drawing_binding::TypographyStyle::new();
+    let mut font_collection = ohos_drawing_binding::FontCollection::shared();
+    let mut text_style = ohos_drawing_binding::TextStyle::new();
+
+    let family = font.family.to_string();
+    text_style.set_font_families(&[family.as_str()]);
+    text_style.set_font_size(font_size as f64);
+
+    let sample = "0000000000000000";
+    let mut builder =
+        ohos_drawing_binding::TypographyBuilder::new(&mut typography_style, &mut font_collection);
+    builder.push_text_style(&mut text_style);
+    builder.add_text(sample);
+    builder.pop_text_style();
+
+    let mut typography = builder.build();
+    typography.layout(10_000.0);
+    let width = typography.longest_line() as f32;
+    if !width.is_finite() || width <= 0.0 {
+        return None;
+    }
+    Some(width / sample.len() as f32)
 }
 
 fn is_probably_monospace_font(window: &mut gpui::Window, font: &gpui::Font) -> bool {
